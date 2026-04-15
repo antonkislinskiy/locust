@@ -1,5 +1,5 @@
 from locust import FastHttpUser
-from locust.contrib.fasthttp import FastHttpSession
+from locust.contrib.fasthttp import FastHttpSession, ResponseContextManager
 from locust.exception import CatchResponseError, InterruptTaskSet, LocustError, ResponseError
 from locust.user import TaskSet, task
 from locust.util.load_locustfile import is_user_class
@@ -804,6 +804,33 @@ class TestFastHttpCatchResponse(WebserverTestCase):
         )
         self.assertEqual(1, self.num_failures)
         self.assertEqual(0, self.num_success)
+
+
+class TestResponseContextManagerDictIsolation(WebserverTestCase):
+    """
+    Test for issue #3388: ResponseContextManager must copy response.__dict__, not share it.
+    """
+
+    def test_response_context_manager_dict_is_independent_copy(self):
+        s = FastHttpSession("http://127.0.0.1:%i" % self.port, self.environment.events.request, user=None)
+        response = s._send_request_safe_mode("GET", "http://127.0.0.1:%i/ultra_fast" % self.port)
+        request_meta = {
+            "request_type": "GET",
+            "name": "/ultra_fast",
+            "context": {},
+            "response": response,
+            "exception": None,
+            "start_time": time.time(),
+            "url": "/ultra_fast",
+            "response_time": 1.0,
+            "response_length": 0,
+        }
+
+        ctx = ResponseContextManager(response, self.environment.events.request, request_meta, catch_response=True)
+
+        self.assertIsNot(ctx.__dict__, response.__dict__)
+        ctx._test_attr = "only_on_ctx"
+        self.assertFalse(hasattr(response, "_test_attr"))
 
 
 class TestFastHttpSsl(LocustTestCase):
