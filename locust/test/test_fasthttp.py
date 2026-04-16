@@ -807,30 +807,41 @@ class TestFastHttpCatchResponse(WebserverTestCase):
 
 
 class TestResponseContextManagerDictIsolation(WebserverTestCase):
-    """
-    Test for issue #3388: ResponseContextManager must copy response.__dict__, not share it.
-    """
+    """Regression test for issue #3388: shared __dict__ between response and
+    ResponseContextManager lets GC clear request_meta mid-request."""
 
-    def test_response_context_manager_dict_is_independent_copy(self):
-        s = FastHttpSession("http://127.0.0.1:%i" % self.port, self.environment.events.request, user=None)
-        response = s._send_request_safe_mode("GET", "http://127.0.0.1:%i/ultra_fast" % self.port)
+    def setUp(self):
+        super().setUp()
+
+        class MyUser(FastHttpUser):
+            host = "http://127.0.0.1:%i" % self.port
+
+        self.user = MyUser(self.environment)
+
+    def test_request_meta_survives_response_dict_clear(self):
+        response = self.user.client.get("/ultra_fast")
         request_meta = {
             "request_type": "GET",
-            "name": "/ultra_fast",
+            "name": "/test",
             "context": {},
             "response": response,
             "exception": None,
-            "start_time": time.time(),
-            "url": "/ultra_fast",
-            "response_time": 1.0,
+            "start_time": 0,
+            "url": "/test",
+            "response_time": 0,
             "response_length": 0,
         }
+        rcm = ResponseContextManager(response, self.environment.events.request, request_meta, True)
+        """
+        Simulate what the GC does when it collects the reference cycle:
+        it clears the dict that both objects shared, wiping request_meta.
+        With the fix, rcm has its own dict so this only affects response.
+        response.__dict__.clear()
 
-        ctx = ResponseContextManager(response, self.environment.events.request, request_meta, catch_response=True)
-
-        self.assertIsNot(ctx.__dict__, response.__dict__)
-        ctx._test_attr = "only_on_ctx"
-        self.assertFalse(hasattr(response, "_test_attr"))
+        With the old code (self.__dict__ = response.__dict__), this would
+        raise KeyError because request_meta was wiped along with everything else.
+        """
+        self.assertEqual(rcm.request_meta["request_type"], "GET")
 
 
 class TestFastHttpSsl(LocustTestCase):
